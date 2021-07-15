@@ -8,6 +8,44 @@
 ########################## FUNCTION CALLS BELOW ################################
 ################################################################################
 ################################################################################
+#### Function GenerateFileDiff #################################################
+function GenerateFileDiff() {
+  CMD="${1}"
+  ################
+  # print header #
+  ################
+  debug "----------------------------------------------"
+  debug "Generating Diff with:[$CMD]"
+
+  #################################################
+  # Get the Array of files changed in the commits #
+  #################################################
+  CMD_OUTPUT=$(eval "$CMD")
+
+  #######################
+  # Load the error code #
+  #######################
+  ERROR_CODE=$?
+
+  ##############################
+  # Check the shell for errors #
+  ##############################
+  if [ ${ERROR_CODE} -ne 0 ]; then
+    # Error
+    info "Failed to get Diff with:[$CMD]"
+    info "Check that you have the full git history, the checkout is not shallow, etc"
+    info "See https://github.com/github/super-linter#example-connecting-github-action-workflow"
+    fatal "[${CMD_OUTPUT}]"
+  fi
+
+  ###################################################
+  # Map command output to an array to proper handle #
+  ###################################################
+  mapfile -t RAW_FILE_ARRAY < <(echo -n "$CMD_OUTPUT")
+  debug "RAW_FILE_ARRAY contents: ${RAW_FILE_ARRAY[*]}"
+}
+
+################################################################################
 #### Function BuildFileList ####################################################
 function BuildFileList() {
   debug "Building file list..."
@@ -23,6 +61,12 @@ function BuildFileList() {
 
   ANSIBLE_DIRECTORY="${3}"
   debug "ANSIBLE_DIRECTORY: ${ANSIBLE_DIRECTORY}..."
+
+  debug "IGNORE_GITIGNORED_FILES: ${IGNORE_GITIGNORED_FILES}..."
+
+  debug "IGNORE_GENERATED_FILES: ${IGNORE_GENERATED_FILES}..."
+
+  debug "USE_FIND_ALGORITHM: ${USE_FIND_ALGORITHM}..."
 
   if [ "${VALIDATE_ALL_CODEBASE}" == "false" ] && [ "${TEST_CASE_RUN}" != "true" ]; then
     # Need to build a list of all files changed
@@ -60,16 +104,8 @@ function BuildFileList() {
       ################
       # push event   #
       ################
-      ################
-      # print header #
-      ################
-      debug "----------------------------------------------"
-      debug "Generating Diff with:[git diff-tree --no-commit-id --name-only -r \"${GITHUB_SHA}\"]"
-
-      #################################################
-      # Get the Array of files changed in the commits #
-      #################################################
-      mapfile -t RAW_FILE_ARRAY < <(git diff-tree --no-commit-id --name-only -r "${GITHUB_SHA}" 2>&1)
+      DIFF_TREE_CMD="git -C ${GITHUB_WORKSPACE} diff-tree --no-commit-id --name-only -r ${GITHUB_SHA} | xargs -I % sh -c 'echo \"${GITHUB_WORKSPACE}/%\"' 2>&1"
+      GenerateFileDiff "$DIFF_TREE_CMD"
 
       ###############################################################
       # Need to see if the array is empty, if so, try the other way #
@@ -81,27 +117,16 @@ function BuildFileList() {
         ################
         debug "----------------------------------------------"
         debug "WARN: Generation of File array with diff-tree produced [0] items, trying with git diff..."
-        debug "Generating Diff with:[git diff --name-only '${DEFAULT_BRANCH}...${GITHUB_SHA}' --diff-filter=d]"
 
-        #################################################
-        # Get the Array of files changed in the commits #
-        #################################################
-        mapfile -t RAW_FILE_ARRAY < <(git -C "${GITHUB_WORKSPACE}" diff --name-only "${DEFAULT_BRANCH}...${GITHUB_SHA}" --diff-filter=d 2>&1)
+        DIFF_CMD="git -C ${GITHUB_WORKSPACE} diff --name-only ${DEFAULT_BRANCH}...${GITHUB_SHA} --diff-filter=d | xargs -I % sh -c 'echo \"${GITHUB_WORKSPACE}/%\"' 2>&1"
+        GenerateFileDiff "$DIFF_CMD"
       fi
     else
       ################
       # PR event     #
       ################
-      ################
-      # print header #
-      ################
-      debug "----------------------------------------------"
-      debug "Generating Diff with:[git diff --name-only '${DEFAULT_BRANCH}...${GITHUB_SHA}' --diff-filter=d]"
-
-      #################################################
-      # Get the Array of files changed in the commits #
-      #################################################
-      mapfile -t RAW_FILE_ARRAY < <(git -C "${GITHUB_WORKSPACE}" diff --name-only "${DEFAULT_BRANCH}...${GITHUB_SHA}" --diff-filter=d 2>&1)
+      DIFF_CMD="git -C ${GITHUB_WORKSPACE} diff --name-only ${DEFAULT_BRANCH}...${GITHUB_SHA} --diff-filter=d | xargs -I % sh -c 'echo \"${GITHUB_WORKSPACE}/%\"' 2>&1"
+      GenerateFileDiff "$DIFF_CMD"
     fi
   else
     WORKSPACE_PATH="${GITHUB_WORKSPACE}"
@@ -109,34 +134,48 @@ function BuildFileList() {
       WORKSPACE_PATH="${GITHUB_WORKSPACE}/${TEST_CASE_FOLDER}"
     fi
 
-    ################
-    # print header #
-    ################
-    debug "----------------------------------------------"
-    debug "Populating the file list with all the files in the ${WORKSPACE_PATH} workspace"
-    mapfile -t RAW_FILE_ARRAY < <(find "${WORKSPACE_PATH}" \
-      -not \( -path '*/\.git' -prune \) \
-      -not \( -path '*/\.pytest_cache' -prune \) \
-      -not \( -path '*/\.rbenv' -prune \) \
-      -not \( -path '*/\.terragrunt-cache' -prune \) \
-      -not \( -path '*/\.venv' -prune \) \
-      -not \( -path '*/\__pycache__' -prune \) \
-      -not \( -path '*/\node_modules' -prune \) \
-      -not -name ".DS_Store" \
-      -not -name "*.gif" \
-      -not -name "*.ico" \
-      -not -name "*.jpg" \
-      -not -name "*.jpeg" \
-      -not -name "*.pdf" \
-      -not -name "*.png" \
-      -not -name "*.webp" \
-      -not -name "*.woff" \
-      -not -name "*.woff2" \
-      -not -name "*.zip" \
-      -type f \
-      2>&1 | sort)
-
-    debug "RAW_FILE_ARRAY contents: ${RAW_FILE_ARRAY[*]}"
+    #############################
+    # Use the find on all files #
+    #############################
+    if [ "${USE_FIND_ALGORITHM}" == 'true' ]; then
+      ################
+      # print header #
+      ################
+      debug "----------------------------------------------"
+      debug "Populating the file list with all the files in the ${WORKSPACE_PATH} workspace using FIND algorithm"
+      mapfile -t RAW_FILE_ARRAY < <(find "${WORKSPACE_PATH}" \
+        -not \( -path '*/\.git' -prune \) \
+        -not \( -path '*/\.pytest_cache' -prune \) \
+        -not \( -path '*/\.rbenv' -prune \) \
+        -not \( -path '*/\.terragrunt-cache' -prune \) \
+        -not \( -path '*/\.venv' -prune \) \
+        -not \( -path '*/\__pycache__' -prune \) \
+        -not \( -path '*/\node_modules' -prune \) \
+        -not -name ".DS_Store" \
+        -not -name "*.gif" \
+        -not -name "*.ico" \
+        -not -name "*.jpg" \
+        -not -name "*.jpeg" \
+        -not -name "*.pdf" \
+        -not -name "*.png" \
+        -not -name "*.webp" \
+        -not -name "*.woff" \
+        -not -name "*.woff2" \
+        -not -name "*.zip" \
+        -type f \
+        2>&1 | sort)
+    else
+      ##############################
+      # use the standard mechinism #
+      ##############################
+      ################
+      # print header #
+      ################
+      debug "----------------------------------------------"
+      debug "Populating the file list with:[git -C \"${WORKSPACE_PATH}\" ls-tree -r --name-only HEAD | xargs -I % sh -c \"echo ${WORKSPACE_PATH}/%\"]"
+      mapfile -t RAW_FILE_ARRAY < <(git -C "${WORKSPACE_PATH}" ls-tree -r --name-only HEAD | xargs -I % sh -c "echo ${WORKSPACE_PATH}/%" 2>&1)
+      debug "RAW_FILE_ARRAY contents: ${RAW_FILE_ARRAY[*]}"
+    fi
   fi
 
   #######################
@@ -161,6 +200,47 @@ function BuildFileList() {
     warn "No files were found in the GITHUB_WORKSPACE:[${GITHUB_WORKSPACE}] to lint!"
   fi
 
+  if [ "${VALIDATE_ALL_CODEBASE}" == "false" ]; then
+    #########################################
+    # Need to switch back to branch of code #
+    #########################################
+    SWITCH2_CMD=$(git -C "${GITHUB_WORKSPACE}" checkout --progress --force "${GITHUB_SHA}" 2>&1)
+
+    #######################
+    # Load the error code #
+    #######################
+    ERROR_CODE=$?
+
+    ##############################
+    # Check the shell for errors #
+    ##############################
+    if [ ${ERROR_CODE} -ne 0 ]; then
+      # Error
+      error "Failed to switch back to branch!"
+      fatal "[${SWITCH2_CMD}]"
+    fi
+  fi
+
+  ###############################
+  # Load the ignored files list #
+  ###############################
+  debug "Loading the files list that Git ignores..."
+  mapfile -t GIT_IGNORED_FILES < <(git -C "${GITHUB_WORKSPACE}" status --ignored --porcelain=v1 --short --untracked-files=normal | grep '!!' | awk -F ' ' '{print $2}' | sed -e 's#^#'"${GITHUB_WORKSPACE}"/'#' | sort)
+  debug "GIT_IGNORED_FILES contents: ${GIT_IGNORED_FILES[*]}"
+
+  # Build an associative array to avoid looping throug the ignored files list
+  local i
+  declare -g -A GIT_IGNORED_FILES_INDEX
+  for i in "${!GIT_IGNORED_FILES[@]}"; do
+    eval GIT_IGNORED_FILES_INDEX["${GIT_IGNORED_FILES[$i]}"]="$i"
+  done
+  debug "--- GIT_IGNORED_FILES_INDEX contents ---"
+  debug "-----------------------"
+  for i in "${!GIT_IGNORED_FILES_INDEX[@]}"; do
+    debug "key: $i, value: ${GIT_IGNORED_FILES_INDEX[$i]}"
+  done
+  debug "---------------------------------------------"
+
   ################################################
   # Iterate through the array of all files found #
   ################################################
@@ -183,7 +263,7 @@ function BuildFileList() {
     ##########################################################
     if [ ! -f "${FILE}" ]; then
       # File not found in workspace
-      debug "File:{$FILE} existed in commit data, but not found on file system, skipping..."
+      warn "File:{$FILE} existed in commit data, but not found on file system, skipping..."
       continue
     fi
 
@@ -200,8 +280,42 @@ function BuildFileList() {
       debug "TEST_CASE_RUN (${TEST_CASE_RUN}) is true. Skipping ${FILE}..."
     fi
 
+    ###############################################
+    # Filter files if FILTER_REGEX_INCLUDE is set #
+    ###############################################
+    if [[ -n "$FILTER_REGEX_INCLUDE" ]] && [[ ! (${FILE} =~ $FILTER_REGEX_INCLUDE) ]]; then
+      debug "FILTER_REGEX_INCLUDE didn't match. Skipping ${FILE}"
+      continue
+    fi
+
+    ###############################################
+    # Filter files if FILTER_REGEX_EXCLUDE is set #
+    ###############################################
+    if [[ -n "$FILTER_REGEX_EXCLUDE" ]] && [[ ${FILE} =~ $FILTER_REGEX_EXCLUDE ]]; then
+      debug "FILTER_REGEX_EXCLUDE match. Skipping ${FILE}"
+      continue
+    fi
+
+    ###################################################
+    # Filter files if FILTER_REGEX_EXCLUDE is not set #
+    ###################################################
+    if [ "${GIT_IGNORED_FILES_INDEX[$FILE]}" ] && [ "${IGNORE_GITIGNORED_FILES}" == "true" ]; then
+      debug "${FILE} is ignored by Git. Skipping ${FILE}"
+      continue
+    fi
+
+    #########################################
+    # Filter files with at-generated marker #
+    #########################################
+    if [ "${IGNORE_GENERATED_FILES}" == "true" ] && IsGenerated "$FILE"; then
+      debug "${FILE} is generated. Skipping ${FILE}"
+      continue
+    fi
+
     # Editorconfig-checker should check every file
     FILE_ARRAY_EDITORCONFIG+=("${FILE}")
+    # jscpd also runs an all files
+    FILE_ARRAY_JSCPD+=("${FILE}")
 
     #######################
     # Get the shell files #
@@ -223,6 +337,20 @@ function BuildFileList() {
       # Append the file to the array #
       ################################
       FILE_ARRAY_CLOJURE+=("${FILE}")
+    #####################
+    # Get the C++ files #
+    #####################
+    elif [ "${FILE_TYPE}" == "cpp" ] || [ "${FILE_TYPE}" == "h" ] ||
+      [ "${FILE_TYPE}" == "cc" ] || [ "${FILE_TYPE}" == "hpp" ] ||
+      [ "${FILE_TYPE}" == "cxx" ] || [ "${FILE_TYPE}" == "cu" ] ||
+      [ "${FILE_TYPE}" == "hxx" ] || [ "${FILE_TYPE}" == "c++" ] ||
+      [ "${FILE_TYPE}" == "hh" ] || [ "${FILE_TYPE}" == "h++" ] ||
+      [ "${FILE_TYPE}" == "cuh" ] || [ "${FILE_TYPE}" == "c" ]; then
+      ################################
+      # Append the file to the array #
+      ################################
+      FILE_ARRAY_CPP+=("${FILE}")
+      FILE_ARRAY_CLANG_FORMAT+=("${FILE}")
 
     ########################
     # Get the COFFEE files #
@@ -265,7 +393,8 @@ function BuildFileList() {
     # Get the DOCKER files #
     ########################
     # Use BASE_FILE here because FILE_TYPE is not reliable when there is no file extension
-    elif [[ "${FILE_TYPE}" != "dockerfilelintrc" ]] && [[ "${FILE_TYPE}" != "tap" ]] && [[ "${BASE_FILE}" == *"dockerfile"* ]]; then
+    elif [[ "${FILE_TYPE}" != "dockerfilelintrc" ]] && [[ "${FILE_TYPE}" != "tap" ]] && [[ "${FILE_TYPE}" != "yml" ]] &&
+      [[ "${FILE_TYPE}" != "yaml" ]] && [[ "${FILE_TYPE}" != "json" ]] && [[ "${FILE_TYPE}" != "xml" ]] && [[ "${BASE_FILE}" == *"dockerfile"* ]]; then
       ################################
       # Append the file to the array #
       ################################
@@ -275,7 +404,7 @@ function BuildFileList() {
     #####################
     # Get the ENV files #
     #####################
-    elif [ "${FILE_TYPE}" == "env" ]; then
+    elif [ "${FILE_TYPE}" == "env" ] || [[ "${BASE_FILE}" == *".env."* ]]; then
       ################################
       # Append the file to the array #
       ################################
@@ -336,10 +465,16 @@ function BuildFileList() {
       ################################
       FILE_ARRAY_JAVASCRIPT_ES+=("${FILE}")
       FILE_ARRAY_JAVASCRIPT_STANDARD+=("${FILE}")
+      FILE_ARRAY_JAVASCRIPT_PRETTIER+=("${FILE}")
 
-    #####################
-    # Get the JSX files #
-    #####################
+    #######################
+    # Get the JSONC files #
+    #######################
+    elif [ "$FILE_TYPE" == "jsonc" ] || [ "$FILE_TYPE" == "json5" ]; then
+      ################################
+      # Append the file to the array #
+      ################################
+      FILE_ARRAY_JSONC+=("${FILE}")
 
     ######################
     # Get the JSON files #
@@ -368,9 +503,9 @@ function BuildFileList() {
         ################################
         FILE_ARRAY_OPENAPI+=("${FILE}")
       fi
-      ############################
+      ########################
       # Check if file is ARM #
-      ############################
+      ########################
       if DetectARMFile "${FILE}"; then
         ################################
         # Append the file to the array #
@@ -396,6 +531,9 @@ function BuildFileList() {
         FILE_ARRAY_STATES+=("${FILE}")
       fi
 
+    #####################
+    # Get the JSX files #
+    #####################
     elif [ "${FILE_TYPE}" == "jsx" ]; then
       ################################
       # Append the file to the array #
@@ -492,9 +630,10 @@ function BuildFileList() {
       # Append the file to the array #
       ################################
       FILE_ARRAY_PYTHON_BLACK+=("${FILE}")
-      FILE_ARRAY_PYTHON_PYLINT+=("${FILE}")
       FILE_ARRAY_PYTHON_FLAKE8+=("${FILE}")
       FILE_ARRAY_PYTHON_ISORT+=("${FILE}")
+      FILE_ARRAY_PYTHON_PYLINT+=("${FILE}")
+      FILE_ARRAY_PYTHON_MYPY+=("${FILE}")
 
     ######################
     # Get the RAKU files #
@@ -525,6 +664,25 @@ function BuildFileList() {
       ################################
       FILE_ARRAY_RUBY+=("${FILE}")
 
+    ######################
+    # Get the RUST files #
+    ######################
+    elif [ "${FILE_TYPE}" == "rs" ]; then
+      ################################
+      # Append the file to the array #
+      ################################
+      FILE_ARRAY_RUST_2015+=("${FILE}")
+      FILE_ARRAY_RUST_2018+=("${FILE}")
+
+    #######################
+    # Get the RUST crates #
+    #######################
+    elif [ "${BASE_FILE}" == "cargo.toml" ]; then
+      ###############################################
+      # Append the crate manifest file to the array #
+      ###############################################
+      FILE_ARRAY_RUST_CLIPPY+=("${FILE}")
+
     ###########################
     # Get the SNAKEMAKE files #
     ###########################
@@ -541,7 +699,7 @@ function BuildFileList() {
     elif [ "${FILE_TYPE}" == "sql" ]; then
       ################################
       # Append the file to the array #
-      ##############################p##
+      ################################
       FILE_ARRAY_SQL+=("${FILE}")
 
     ###########################
@@ -557,7 +715,7 @@ function BuildFileList() {
     ############################
     # Get the Terragrunt files #
     ############################
-    elif [ "${FILE_TYPE}" == "hcl" ] && [[ ${FILE} != *".tflint.hcl"* ]]; then
+    elif [ "${FILE_TYPE}" == "hcl" ] && [[ ${FILE} != *".tflint.hcl"* ]] && [[ ${FILE} != *".pkr.hcl"* ]]; then
       ################################
       # Append the file to the array #
       ################################
@@ -624,6 +782,16 @@ function BuildFileList() {
         FILE_ARRAY_CLOUDFORMATION+=("${FILE}")
       fi
 
+      ############################
+      # Check if file is OpenAPI #
+      ############################
+      if DetectOpenAPIFile "${FILE}"; then
+        ################################
+        # Append the file to the array #
+        ################################
+        FILE_ARRAY_OPENAPI+=("${FILE}")
+      fi
+
       ########################################
       # Check if the file is Tekton template #
       ########################################
@@ -657,27 +825,6 @@ function BuildFileList() {
     ##########################################
     debug ""
   done
-
-  if [ "${VALIDATE_ALL_CODEBASE}" == "false" ]; then
-    #########################################
-    # Need to switch back to branch of code #
-    #########################################
-    SWITCH2_CMD=$(git -C "${GITHUB_WORKSPACE}" checkout --progress --force "${GITHUB_SHA}" 2>&1)
-
-    #######################
-    # Load the error code #
-    #######################
-    ERROR_CODE=$?
-
-    ##############################
-    # Check the shell for errors #
-    ##############################
-    if [ ${ERROR_CODE} -ne 0 ]; then
-      # Error
-      error "Failed to switch back to branch!"
-      fatal "[${SWITCH2_CMD}]"
-    fi
-  fi
 
   ################
   # Footer print #

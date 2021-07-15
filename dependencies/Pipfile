@@ -6,21 +6,25 @@ verify_ssl = true
 [dev-packages]
 
 [packages]
+ansible-lint = {extras = ["core"], version = "*"}
 black = "*"
 cfn-lint = "*"
+cpplint = "*"
 cython = "*"
 flake8 = "*"
-pylint = "*"
 isort = "*"
+kiwisolver = "*"
+mypy = "*"
+pylint = "*"
 snakefmt = "*"
 snakemake = "*"
-yamllint = "*"
 typing_extensions = "*"
+types-requests = "*"
+yamllint = "*"
 yq = "*"
-ansible-lint = "*"
 
 [requires]
-python_version = "3.8"
+python_version = "3.9"
 
 [pipenv]
 allow_prereleases = true

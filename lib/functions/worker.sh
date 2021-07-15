@@ -32,6 +32,7 @@ function LintCodebase() {
   # Set the flag #
   ################
   SKIP_FLAG=0
+  INDEX=0
 
   ############################################################
   # Check to see if we need to go through array or all files #
@@ -46,40 +47,10 @@ function LintCodebase() {
 
   debug "SKIP_FLAG: ${SKIP_FLAG}, list of files to lint: ${LIST_FILES[*]}"
 
-  #################################################
-  # Filter files if FILTER_REGEX_INCLUDE is set #
-  #################################################
-  if [[ -n "$FILTER_REGEX_INCLUDE" ]]; then
-    for index in "${!LIST_FILES[@]}"; do
-      [[ ! (${LIST_FILES[$index]} =~ $FILTER_REGEX_INCLUDE) ]] && unset -v 'LIST_FILES[$index]'
-    done
-    debug "List of files to lint after FILTER_REGEX_INCLUDE: ${LIST_FILES[*]}"
-  fi
-
-  #################################################
-  # Filter files if FILTER_REGEX_EXCLUDE is set #
-  #################################################
-  if [[ -n "$FILTER_REGEX_EXCLUDE" ]]; then
-    for index in "${!LIST_FILES[@]}"; do
-      [[ ${LIST_FILES[$index]} =~ $FILTER_REGEX_EXCLUDE ]] && unset -v 'LIST_FILES[$index]'
-    done
-    debug "List of files to lint after FILTER_REGEX_EXCLUDE: ${LIST_FILES[*]}"
-  fi
-
   ###############################
   # Check if any data was found #
   ###############################
   if [ ${SKIP_FLAG} -eq 0 ]; then
-    ########################################
-    # Prepare context if TAP format output #
-    ########################################
-    if IsTAP; then
-      TMPFILE=$(mktemp -q "/tmp/super-linter-${FILE_TYPE}.XXXXXX")
-      INDEX=0
-      mkdir -p "${REPORT_OUTPUT_FOLDER}"
-      REPORT_OUTPUT_FILE="${REPORT_OUTPUT_FOLDER}/super-linter-${FILE_TYPE}.${OUTPUT_FORMAT}"
-    fi
-
     WORKSPACE_PATH="${GITHUB_WORKSPACE}"
     if [ "${TEST_CASE_RUN}" == "true" ]; then
       WORKSPACE_PATH="${GITHUB_WORKSPACE}/${TEST_CASE_FOLDER}"
@@ -126,6 +97,26 @@ function LintCodebase() {
       ###################
       if [[ ${FILE_TYPE} == *"DOCKER"* ]]; then
         debug "FILE_TYPE for FILE ${FILE} is related to Docker: ${FILE_TYPE}"
+        if [[ ${FILE} == *"good"* ]]; then
+          debug "Setting FILE_STATUS for FILE ${FILE} to 'good'"
+          #############
+          # Good file #
+          #############
+          FILE_STATUS='good'
+        elif [[ ${FILE} == *"bad"* ]]; then
+          debug "Setting FILE_STATUS for FILE ${FILE} to 'bad'"
+          ############
+          # Bad file #
+          ############
+          FILE_STATUS='bad'
+        fi
+      fi
+
+      #######################################
+      # Check if Cargo.toml for Rust Clippy #
+      #######################################
+      if [[ ${FILE_TYPE} == *"RUST"* ]] && [[ ${LINTER_NAME} == "clippy" ]]; then
+        debug "FILE_TYPE for FILE ${FILE} is related to Rust Clippy: ${FILE_TYPE}"
         if [[ ${FILE} == *"good"* ]]; then
           debug "Setting FILE_STATUS for FILE ${FILE} to 'good'"
           #############
@@ -195,7 +186,7 @@ function LintCodebase() {
         # Lint the file with the rules #
         ################################
         LINT_CMD=$(
-          cd "${WORKSPACE_PATH}/ansible" || exit
+          cd "${ANSIBLE_DIRECTORY}" || exit
           ${LINTER_COMMAND} "${FILE}" 2>&1
         )
       ####################################
@@ -238,7 +229,7 @@ function LintCodebase() {
         fi
         LINT_CMD=$(
           cd "$r_dir" || exit
-          R --slave -e "errors <- lintr::lint('$FILE');print(errors);quit(save = 'no', status = if (length(errors) > 0) 1 else 0)" 2>&1
+          R --slave -e "lints <- lintr::lint('$FILE');print(lints);errors <- purrr::keep(lints, ~ .\$type == 'error');quit(save = 'no', status = if (length(errors) > 0) 1 else 0)" 2>&1
         )
       #########################################################
       # Corner case for C# as it writes to tty and not stdout #
@@ -248,6 +239,14 @@ function LintCodebase() {
           cd "${DIR_NAME}" || exit
           ${LINTER_COMMAND} "${FILE_NAME}" | tee /dev/tty2 2>&1
           exit "${PIPESTATUS[0]}"
+        )
+      #######################################################
+      # Corner case for KTLINT as it cant use the full path #
+      #######################################################
+      elif [[ ${FILE_TYPE} == "KOTLIN" ]]; then
+        LINT_CMD=$(
+          cd "${DIR_NAME}" || exit
+          ${LINTER_COMMAND} "${FILE_NAME}" 2>&1
         )
       else
         ################################
@@ -283,30 +282,15 @@ function LintCodebase() {
             # Error #
             #########
             error "Found errors in [${LINTER_NAME}] linter!"
-            error "Error code: ${ERROR_CODE}. Command output:${NC}[${LINT_CMD}]"
+            error "Error code: ${ERROR_CODE}. Command output:${NC}\n------\n${LINT_CMD}\n------"
             # Increment the error count
             (("ERRORS_FOUND_${FILE_TYPE}++"))
-          fi
-
-          #######################################################
-          # Store the linting as a temporary file in TAP format #
-          #######################################################
-          if IsTAP; then
-            NotOkTap "${INDEX}" "${FILE_NAME}" "${TMPFILE}"
-            AddDetailedMessageIfEnabled "${LINT_CMD}" "${TMPFILE}"
           fi
         else
           ###########
           # Success #
           ###########
           info " - File:${F[W]}[${FILE_NAME}]${F[B]} was linted with ${F[W]}[${LINTER_NAME}]${F[B]} successfully"
-
-          #######################################################
-          # Store the linting as a temporary file in TAP format #
-          #######################################################
-          if IsTAP; then
-            OkTap "${INDEX}" "${FILE_NAME}" "${TMPFILE}"
-          fi
         fi
       else
         #######################################
@@ -321,7 +305,7 @@ function LintCodebase() {
           #########
           error "Found errors in [${LINTER_NAME}] linter!"
           error "This file should have failed test case!"
-          error "Error code: ${ERROR_CODE}. Command output:${NC}[${LINT_CMD}]."
+          error "Error code: ${ERROR_CODE}. Command output:${NC}\n------\n${LINT_CMD}\n------"
           # Increment the error count
           (("ERRORS_FOUND_${FILE_TYPE}++"))
         else
@@ -330,57 +314,19 @@ function LintCodebase() {
           ###########
           info " - File:${F[W]}[${FILE_NAME}]${F[B]} failed test case (Error code: ${ERROR_CODE}) with ${F[W]}[${LINTER_NAME}]${F[B]} successfully"
         fi
-
-        #######################################################
-        # Store the linting as a temporary file in TAP format #
-        #######################################################
-        if IsTAP; then
-          NotOkTap "${INDEX}" "${FILE_NAME}" "${TMPFILE}"
-          AddDetailedMessageIfEnabled "${LINT_CMD}" "${TMPFILE}"
-        fi
       fi
-      debug "Error code: ${ERROR_CODE}. Command output:${NC}[${LINT_CMD}]."
+      debug "Error code: ${ERROR_CODE}. Command output:${NC}\n------\n${LINT_CMD}\n------"
     done
+  fi
 
-    #################################
-    # Generate report in TAP format #
-    #################################
-    if IsTAP && [ ${INDEX} -gt 0 ]; then
-      HeaderTap "${INDEX}" "${REPORT_OUTPUT_FILE}"
-      cat "${TMPFILE}" >>"${REPORT_OUTPUT_FILE}"
-
-      if [ "${TEST_CASE_RUN}" = "true" ]; then
-        ########################################################################
-        # If expected TAP report exists then compare with the generated report #
-        ########################################################################
-        EXPECTED_FILE="${WORKSPACE_PATH}/${INDIVIDUAL_TEST_FOLDER}/reports/expected-${FILE_TYPE}.tap"
-        if [ -e "${EXPECTED_FILE}" ]; then
-          TMPFILE=$(mktemp -q "/tmp/diff-${FILE_TYPE}.XXXXXX")
-          ## Ignore white spaces, case sensitive
-          if ! diff -a -w -i "${EXPECTED_FILE}" "${REPORT_OUTPUT_FILE}" >"${TMPFILE}" 2>&1; then
-            #############################################
-            # We failed to compare the reporting output #
-            #############################################
-            cat "${TMPFILE}"
-            fatal "Failed to assert TAP output for ${LINTER_NAME} linter"
-          else
-            info "TAP output validated successfully for ${LINTER_NAME}"
-          fi
-        else
-          fatal "No TAP expected file found at:[${EXPECTED_FILE}]"
-        fi
-      fi
-    fi
-
-    ##############################
-    # Validate we ran some tests #
-    ##############################
-    if [ "${TEST_CASE_RUN}" = "true" ] && [ "${INDEX}" -eq 0 ]; then
-      #################################################
-      # We failed to find files and no tests were ran #
-      #################################################
-      error "Failed to find any tests ran for the Linter:[${LINTER_NAME}]"!
-      fatal "Please validate logic or that tests exist!"
-    fi
+  ##############################
+  # Validate we ran some tests #
+  ##############################
+  if [ "${TEST_CASE_RUN}" = "true" ] && [ "${INDEX}" -eq 0 ]; then
+    #################################################
+    # We failed to find files and no tests were ran #
+    #################################################
+    error "Failed to find any tests ran for the Linter:[${LINTER_NAME}]!"
+    fatal "Please validate logic or that tests exist!"
   fi
 }

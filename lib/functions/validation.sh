@@ -129,18 +129,32 @@ function GetValidationInfo() {
   ##############################
   # Validate Ansible Directory #
   ##############################
+  # No Value, need to default
   if [ -z "${ANSIBLE_DIRECTORY}" ]; then
-    # No Value, need to default
-    ANSIBLE_DIRECTORY="${DEFAULT_ANSIBLE_DIRECTORY}"
-    debug "Setting Ansible directory to the default: ${DEFAULT_ANSIBLE_DIRECTORY}"
+
+    if [ "${TEST_CASE_RUN}" != "true" ]; then
+      ANSIBLE_DIRECTORY="${DEFAULT_ANSIBLE_DIRECTORY}"
+      debug "Setting Ansible directory to the default: ${DEFAULT_ANSIBLE_DIRECTORY}"
+    else
+      ANSIBLE_DIRECTORY="${DEFAULT_TEST_CASE_ANSIBLE_DIRECTORY}"
+      debug "Setting Ansible directory to the default for test cases: ${DEFAULT_TEST_CASE_ANSIBLE_DIRECTORY}"
+    fi
+    debug "Setting Ansible directory to: ${ANSIBLE_DIRECTORY}"
   else
     # Check if first char is '/'
     if [[ ${ANSIBLE_DIRECTORY:0:1} == "/" ]]; then
       # Remove first char
       ANSIBLE_DIRECTORY="${ANSIBLE_DIRECTORY:1}"
     fi
-    # Need to give it full path
-    TEMP_ANSIBLE_DIRECTORY="${GITHUB_WORKSPACE}/${ANSIBLE_DIRECTORY}"
+
+    if [ -z "${ANSIBLE_DIRECTORY}" ] || [[ ${ANSIBLE_DIRECTORY} == "." ]]; then
+      # Catches the case where ANSIBLE_DIRECTORY="/" or ANSIBLE_DIRECTORY="."
+      TEMP_ANSIBLE_DIRECTORY="${GITHUB_WORKSPACE}"
+    else
+      # Need to give it full path
+      TEMP_ANSIBLE_DIRECTORY="${GITHUB_WORKSPACE}/${ANSIBLE_DIRECTORY}"
+    fi
+
     # Set the value
     ANSIBLE_DIRECTORY="${TEMP_ANSIBLE_DIRECTORY}"
     debug "Setting Ansible directory to: ${ANSIBLE_DIRECTORY}"

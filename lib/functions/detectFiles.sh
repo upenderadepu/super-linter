@@ -8,7 +8,8 @@
 ########################## FUNCTION CALLS BELOW ################################
 ################################################################################
 ################################################################################
-
+################################################################################
+#### Function DetectAnsibleFile ################################################
 DetectAnsibleFile() {
   ANSIBLE_DIRECTORY="${1}"
   FILE="${2}"
@@ -18,7 +19,7 @@ DetectAnsibleFile() {
   if [[ ${FILE} == *"vault.yml" ]] || [[ ${FILE} == *"galaxy.yml" ]] || [[ ${FILE} == *"vault.yaml" ]] || [[ ${FILE} == *"galaxy.yaml" ]]; then
     debug "${FILE} is a file that super-linter ignores. Ignoring it..."
     return 1
-  elif [[ "$(dirname "${FILE}")" == "${ANSIBLE_DIRECTORY}" ]]; then
+  elif [[ "$(dirname "${FILE}")" == *"${ANSIBLE_DIRECTORY}"* ]]; then
     debug "${FILE} is an Ansible-related file."
     return 0
   else
@@ -26,7 +27,7 @@ DetectAnsibleFile() {
     return 1
   fi
 }
-
+################################################################################
 #### Function DetectOpenAPIFile ################################################
 DetectOpenAPIFile() {
   ################
@@ -49,14 +50,10 @@ DetectOpenAPIFile() {
   # Check the shell for errors #
   ##############################
   if [ ${ERROR_CODE} -eq 0 ]; then
-    ########################
-    # Found string in file #
-    ########################
+    debug "${FILE} is an OpenAPI descriptor"
     return 0
   else
-    ###################
-    # No string match #
-    ###################
+    debug "${FILE} is NOT an OpenAPI descriptor"
     return 1
   fi
 }
@@ -268,6 +265,7 @@ function CheckFileType() {
     ################################
     # Append the file to the array #
     ################################
+    FILE_ARRAY_JSCPD+=("${FILE}")
     FILE_ARRAY_RUBY+=("${FILE}")
   else
     ############################
@@ -335,4 +333,44 @@ function IsValidShellScript() {
 
   trace "$FILE is NOT a supported shell script. Skipping"
   return 1
+}
+################################################################################
+#### Function IsGenerated ######################################################
+function IsGenerated() {
+  # Pull in Vars #
+  ################
+  FILE="$1"
+
+  ##############################
+  # Check the file for keyword #
+  ##############################
+  grep -q "@generated" "$FILE"
+
+  #######################
+  # Load the error code #
+  #######################
+  ERROR_CODE=$?
+
+  if [ ${ERROR_CODE} -ne 0 ]; then
+    trace "File:[${FILE}] is not generated, because it doesn't have @generated marker"
+    return 1
+  fi
+
+  ##############################
+  # Check the file for keyword #
+  ##############################
+  grep -q "@not-generated" "$FILE"
+
+  #######################
+  # Load the error code #
+  #######################
+  ERROR_CODE=$?
+
+  if [ ${ERROR_CODE} -eq 0 ]; then
+    trace "File:[${FILE}] is not-generated because it has @not-generated marker"
+    return 1
+  else
+    trace "File:[${FILE}] is generated because it has @generated marker"
+    return 0
+  fi
 }
